@@ -4,5 +4,6 @@
 //! render the SAME view code. A screenshot path that renders something other
 //! than what ships is worse than no screenshot path.
 pub mod app;
+pub mod browse;
 pub mod theme;
 pub mod view;

@@ -75,6 +75,8 @@ pub struct ScanResult {
     pub cross_filesystems: bool,
     /// True only when every directory under the root was fully enumerated.
     pub complete: bool,
+    /// The caller stopped this scan. Never a usable baseline.
+    pub cancelled: bool,
 }
 
 impl ScanResult {
@@ -144,19 +146,24 @@ impl Default for ScanOptions {
     }
 }
 
-/// Scan with no progress reporting.
+/// Scan with no progress reporting and no cancellation.
 pub fn scan(root: &Path, opts: &ScanOptions) -> anyhow::Result<ScanResult> {
-    scan_with(root, opts, &mut |_| {})
+    scan_with(root, opts, &mut |_| true)
 }
 
 /// Scan, invoking `on_progress` as the walk proceeds. The callback is
 /// THROTTLED by the caller's own logic if needed — we call it once per
 /// directory completed, not once per entry, so a million-file tree does not
 /// spend its time formatting status lines.
+/// The callback returns `false` to CANCEL. Cancellation is checked once per
+/// completed directory: fine-grained enough that a user-visible Stop feels
+/// immediate, coarse enough to cost nothing on the hot path. A cancelled scan
+/// sets `cancelled` and `complete = false`, so it can never be mistaken for a
+/// finished one or accepted as a baseline.
 pub fn scan_with(
     root: &Path,
     opts: &ScanOptions,
-    on_progress: &mut dyn FnMut(&Progress),
+    on_progress: &mut dyn FnMut(&Progress) -> bool,
 ) -> anyhow::Result<ScanResult> {
     let root = root
         .canonicalize()
@@ -167,6 +174,7 @@ pub fn scan_with(
     let mut entries: Vec<Entry> = Vec::new();
     let mut coverage: Vec<Coverage> = Vec::new();
     let mut complete = true;
+    let mut cancelled = false;
     let mut n_files = 0usize;
     let mut bytes_seen = 0u64;
     let mut stack: Vec<PathBuf> = vec![root.clone()];
@@ -267,7 +275,7 @@ pub fn scan_with(
         // re-scanned `entries` on every directory to total files and bytes —
         // O(n^2), roughly 200M operations on a 39k-entry tree, turning a
         // progress indicator into the slowest part of the scan.
-        on_progress(&Progress {
+        let keep_going = on_progress(&Progress {
             entries: entries.len(),
             files: n_files,
             dirs: entries.len() - n_files,
@@ -275,6 +283,11 @@ pub fn scan_with(
             bytes_seen: bytes_seen,
             current: &dir,
         });
+        if !keep_going {
+            cancelled = true;
+            complete = false;
+            break;
+        }
     }
 
     Ok(ScanResult {
@@ -284,6 +297,7 @@ pub fn scan_with(
         root_dev,
         cross_filesystems: opts.cross_filesystems,
         complete,
+        cancelled,
     })
 }
 

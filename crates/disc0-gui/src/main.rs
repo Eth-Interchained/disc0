@@ -22,14 +22,10 @@ fn main() -> anyhow::Result<()> {
     }
     let root = root.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
 
-    eprintln!("disc0-gui: scanning {} …", root.display());
-    let app = app::App::scan(root, ephemeral)?;
-    eprintln!(
-        "disc0-gui: {} findings, {} entries in {}ms",
-        app.findings.len(),
-        app.summary.entries,
-        app.summary.scan_ms
-    );
+    // The window opens on the browse screen. Nothing is read until the user
+    // picks a folder and presses Scan — a disk tool that starts crawling your
+    // home directory the moment it launches has already lost your trust.
+    let app = app::App::new(root, ephemeral);
 
     forge_ui::run(
         app,

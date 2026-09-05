@@ -161,6 +161,7 @@ fn cmd_scan(a: &Args) -> Result<i32> {
                 p.coverage_errors,
                 &p.current.to_string_lossy(),
             );
+            true // the CLI has no cancel affordance yet; Ctrl-C still works
         })?
     };
     let scan_dur = t0.elapsed();
