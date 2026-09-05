@@ -114,7 +114,10 @@ impl Store {
                 "cross_filesystems": scan.cross_filesystems,
                 "scope_hash": scope_hash,
                 "status": "running",
-                "tool_version": env!("CARGO_PKG_VERSION"),
+                // Full build provenance, not just a version string: a receipt
+                // that cannot name the binary that produced it is a weaker
+                // receipt. A finding from an old build stays identifiable.
+                "tool": crate::brand::provenance_json(),
             }),
             vec![],
             None,

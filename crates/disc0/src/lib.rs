@@ -5,10 +5,12 @@
 //! trip, and no serialize/deserialize tax between the scanner and the UI.
 //! `scan()` hands back real structs.
 
+pub mod brand;
 pub mod detect;
 pub mod scan;
 pub mod store;
 
+pub use brand::{banner, provenance_json, signature};
 pub use detect::{Consequence, Evidence, Finding};
 pub use scan::{scan, Coverage, Entry, ScanOptions, ScanResult};
 pub use store::{BaselineCheck, Store, WrittenScan};

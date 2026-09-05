@@ -14,7 +14,7 @@
 use disc0::{detect, scan, store};
 
 use anyhow::Result;
-use disc0::{human_bytes as human, scope_hash, state_dir};
+use disc0::{brand, human_bytes as human, scope_hash, state_dir};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -91,22 +91,37 @@ fn run() -> Result<i32> {
         "findings" => cmd_findings(&a),
         "explain" => cmd_explain(&a),
         "status" => cmd_status(&a),
+        "version" | "--version" | "-V" => cmd_version(&a),
         _ => {
+            // Banner goes to stdout only on the human path; --json callers get
+            // a machine document and nothing else, ever.
+            if !a.json {
+                print!("{}", brand::banner());
+            }
             println!(
-                "disc0 {} — read-only disk explainer\n\n\
-                 USAGE\n\
-                 \x20 disc0 scan <path> [--json] [--cross-filesystems] [--ephemeral] [--limit N]\n\
-                 \x20 disc0 findings [--json]\n\
-                 \x20 disc0 explain <finding-id>\n\
-                 \x20 disc0 status [--json]\n\n\
-                 v0.1 NEVER modifies or removes anything outside its own state directory.\n\
-                 State: {}\n",
-                env!("CARGO_PKG_VERSION"),
+                "\n  USAGE\n\
+                 \x20   disc0 scan <path> [--json] [--cross-filesystems] [--ephemeral] [--limit N]\n\
+                 \x20   disc0 findings [--json]\n\
+                 \x20   disc0 explain <finding-id> [--json]\n\
+                 \x20   disc0 status [--json]\n\
+                 \x20   disc0 version [--json]\n\n\
+                 \x20 disc0 NEVER modifies or removes anything outside its own state directory.\n\
+                 \x20 State: {}\n",
                 state_dir().display()
             );
             Ok(0)
         }
     }
+}
+
+fn cmd_version(a: &Args) -> Result<i32> {
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&brand::provenance_json())?);
+    } else {
+        print!("{}", brand::banner());
+        println!();
+    }
+    Ok(0)
 }
 
 fn cmd_scan(a: &Args) -> Result<i32> {
@@ -160,6 +175,7 @@ fn cmd_scan(a: &Args) -> Result<i32> {
                 "persist_error": written.persist_error,
                 "ephemeral": a.ephemeral,
             },
+            "tool": brand::provenance_json(),
             "coverage_errors": result.coverage.iter().map(|c| json!({
                 "kind": c.kind(), "path": c.path().to_string_lossy(), "detail": c.detail()
             })).collect::<Vec<_>>(),
@@ -260,6 +276,7 @@ fn cmd_scan(a: &Args) -> Result<i32> {
                 written.scan_id, written.finding_count, written.scan_id
             );
         }
+        println!("  {}", brand::signature());
         println!();
     }
 
