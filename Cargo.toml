@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/disc0"]
+members = ["crates/disc0", "crates/disc0-gui"]
 
 # One repo, one build, one lockfile. The GUI links the disc0 library
 # IN-PROCESS — no subprocess, no JSON round trip — so CLI and GUI can never
@@ -9,7 +9,7 @@ members = ["crates/disc0"]
 [workspace.package]
 version    = "0.1.0"
 edition    = "2021"
-license    = "GPL-3.0-or-later"
+license    = "BUSL-1.1"
 repository = "https://github.com/Eth-Interchained/disc0"
 
 [workspace.dependencies]

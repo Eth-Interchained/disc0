@@ -15,7 +15,11 @@ pub const RUSTC: &str = env!("DISC0_RUSTC");
 pub const TARGET: &str = env!("DISC0_TARGET");
 pub const PROFILE: &str = env!("DISC0_PROFILE");
 pub const ENGINE: &str = env!("DISC0_ENGINE");
-pub const LICENSE: &str = "GPL-3.0-or-later";
+pub const LICENSE: &str = "BUSL-1.1";
+/// BUSL converts to this on the Change Date — stated so a user of a shipped
+/// binary can see the terms they will eventually receive, not just today's.
+pub const CHANGE_LICENSE: &str = "GPL-3.0-only";
+pub const CHANGE_DATE: &str = "2030-09-05";
 pub const REPO: &str = "https://github.com/Eth-Interchained/disc0";
 
 /// 256-colour approximations of the house palette. Chosen over 24-bit truecolour
@@ -109,7 +113,7 @@ pub fn banner() -> String {
     ));
     s.push_str(&format!(
         "  {}\n",
-        p.w(c::DIM, &format!("{LICENSE} · Interchained · {REPO}")),
+        p.w(c::DIM, &format!("{LICENSE} → {CHANGE_LICENSE} on {CHANGE_DATE} · Interchained")),
     ));
     s
 }
@@ -138,6 +142,8 @@ pub fn provenance_json() -> serde_json::Value {
         "profile": PROFILE,
         "engine": { "name": "nedb-engine", "version": ENGINE },
         "license": LICENSE,
+        "change_license": CHANGE_LICENSE,
+        "change_date": CHANGE_DATE,
         "repository": REPO,
         "read_only": true,
     })

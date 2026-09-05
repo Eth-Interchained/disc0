@@ -1,0 +1,26 @@
+[package]
+name = "disc0-gui"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Native GUI for disc0, built on Forge UI"
+publish = false
+
+[dependencies]
+disc0 = { path = "../disc0" }
+forge-ui = "0.1.0"
+anyhow.workspace = true
+serde_json.workspace = true
+
+[lib]
+name = "disc0_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "disc0-gui"
+path = "src/main.rs"
+
+[[bin]]
+name = "disc0-gui-render"
+path = "src/bin/render.rs"
