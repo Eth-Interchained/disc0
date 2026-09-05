@@ -113,6 +113,17 @@ impl ScanResult {
     }
 }
 
+/// Live progress, emitted during the walk so a long scan is never silent.
+/// Deliberately cheap: counters and a borrowed path, no allocation per entry.
+pub struct Progress<'a> {
+    pub entries: usize,
+    pub files: usize,
+    pub dirs: usize,
+    pub coverage_errors: usize,
+    pub bytes_seen: u64,
+    pub current: &'a Path,
+}
+
 pub struct ScanOptions {
     pub cross_filesystems: bool,
     pub follow_symlinks: bool,
@@ -133,7 +144,20 @@ impl Default for ScanOptions {
     }
 }
 
+/// Scan with no progress reporting.
 pub fn scan(root: &Path, opts: &ScanOptions) -> anyhow::Result<ScanResult> {
+    scan_with(root, opts, &mut |_| {})
+}
+
+/// Scan, invoking `on_progress` as the walk proceeds. The callback is
+/// THROTTLED by the caller's own logic if needed — we call it once per
+/// directory completed, not once per entry, so a million-file tree does not
+/// spend its time formatting status lines.
+pub fn scan_with(
+    root: &Path,
+    opts: &ScanOptions,
+    on_progress: &mut dyn FnMut(&Progress),
+) -> anyhow::Result<ScanResult> {
     let root = root
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("cannot open root {}: {}", root.display(), e))?;
@@ -143,6 +167,8 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> anyhow::Result<ScanResult> {
     let mut entries: Vec<Entry> = Vec::new();
     let mut coverage: Vec<Coverage> = Vec::new();
     let mut complete = true;
+    let mut n_files = 0usize;
+    let mut bytes_seen = 0u64;
     let mut stack: Vec<PathBuf> = vec![root.clone()];
 
     // The root itself is an entry.
@@ -227,8 +253,28 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> anyhow::Result<ScanResult> {
                 ));
                 complete = false;
             }
+            if !e.is_dir && !e.is_symlink {
+                n_files += 1;
+                bytes_seen += e.allocated;
+            }
             entries.push(e);
         }
+
+        // One report per directory completed: frequent enough to look alive on
+        // a slow disk, rare enough to cost nothing on a fast one.
+        //
+        // Counters are RUNNING, not recomputed. The first version of this
+        // re-scanned `entries` on every directory to total files and bytes —
+        // O(n^2), roughly 200M operations on a 39k-entry tree, turning a
+        // progress indicator into the slowest part of the scan.
+        on_progress(&Progress {
+            entries: entries.len(),
+            files: n_files,
+            dirs: entries.len() - n_files,
+            coverage_errors: coverage.len(),
+            bytes_seen: bytes_seen,
+            current: &dir,
+        });
     }
 
     Ok(ScanResult {

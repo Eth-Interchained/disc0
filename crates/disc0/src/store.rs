@@ -18,25 +18,36 @@
 
 use anyhow::{Context, Result};
 
-/// Run `f` with fd 1 temporarily pointed at fd 2.
+/// Run `f` with fd 1 pointed at /dev/null.
 ///
 /// The engine announces its startup regime on stdout (`[nedbd] warm start …`).
-/// That is fine for a server and fatal for us: `--json` must emit nothing on
-/// stdout but the document, or every machine consumer has to strip banner lines
-/// before parsing. Rather than parse around it, we move the engine's chatter to
-/// stderr, where progress belongs, for exactly the duration of the open.
-fn with_stdout_on_stderr<T>(f: impl FnOnce() -> T) -> T {
+/// That is right for a server and wrong for us on both channels: on stdout it
+/// corrupts the `--json` document, and on stderr it lands in the middle of our
+/// own phase reporting. We report progress ourselves, so the banner is pure
+/// noise here and is dropped for exactly the duration of the open.
+///
+/// This suppresses INFORMATIONAL output only. The engine reports real failures
+/// through `Result` and through `eprintln!` on stderr, neither of which is
+/// touched — a swallowed durability error is the one thing this tool must never
+/// have.
+fn with_engine_chatter_suppressed<T>(f: impl FnOnce() -> T) -> T {
     unsafe {
+        let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
+        if devnull < 0 {
+            return f();
+        }
         let saved = libc::dup(1);
         if saved < 0 {
+            libc::close(devnull);
             return f();
         }
         libc::fflush(std::ptr::null_mut());
-        libc::dup2(2, 1);
+        libc::dup2(devnull, 1);
         let out = f();
         libc::fflush(std::ptr::null_mut());
         libc::dup2(saved, 1);
         libc::close(saved);
+        libc::close(devnull);
         out
     }
 }
@@ -56,6 +67,7 @@ pub struct WrittenScan {
     pub start_hash: String,
     pub completion_hash: Option<String>,
     pub observation_count: usize,
+    pub observation_pages: usize,
     pub finding_count: usize,
     pub persisted: bool,
     pub persist_error: Option<String>,
@@ -68,7 +80,7 @@ impl Store {
         // A second process gets a loud, explicit refusal from the engine's
         // advisory dir lock (released even on SIGKILL). We surface it as a busy
         // error rather than pretending to scan.
-        let db = with_stdout_on_stderr(|| Db::open(state_dir, None))
+        let db = with_engine_chatter_suppressed(|| Db::open(state_dir, None))
             .with_context(|| "another disc0 process holds this state directory")?;
         Ok(Self { db })
     }
@@ -289,6 +301,7 @@ impl Store {
             start_hash: start.hash,
             completion_hash: Some(completion.hash),
             observation_count: scan.entries.len(),
+            observation_pages: obs_page_hashes.len(),
             finding_count: findings.len(),
             persisted,
             persist_error,

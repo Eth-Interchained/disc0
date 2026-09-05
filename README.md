@@ -76,11 +76,23 @@ Most of the work here is refusing to state a number that isn't true.
 ## Usage
 
 ```bash
-disc0 scan <path> [--json] [--cross-filesystems] [--ephemeral] [--limit N]
+disc0 scan <path> [--json] [--quiet] [--cross-filesystems] [--ephemeral] [--limit N]
 disc0 findings [--json]
 disc0 explain <finding-id>
 disc0 status [--json]
 ```
+
+A scan reports live: a throttled status line while walking, then a timed phase per stage.
+
+```
+  ⠙     18432 entries ·    16204 files ·   142.1 MiB ·   61440/s   /Users/…/node_modules/.pnpm
+  ✓ SCAN 39400 entries · 34630 files · 293.5 MiB (70ms)
+  ✓ DETECT 1 findings (33ms)
+  ✓ PERSIST 40 observation pages · 1 findings · durable (130ms)
+```
+
+All of it goes to **stderr**, so stdout carries only the report or the JSON document.
+`--quiet` silences it; `--json` silences it automatically and emits nothing on stderr at all.
 
 `--ephemeral` runs entirely in memory: nothing is saved, no baseline is created for future
 comparison, and it tells you that rather than leaving you to assume.

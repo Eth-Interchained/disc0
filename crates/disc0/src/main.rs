@@ -14,7 +14,7 @@
 use disc0::{detect, scan, store};
 
 use anyhow::Result;
-use disc0::{brand, human_bytes as human, scope_hash, state_dir};
+use disc0::{brand, human_bytes as human, progress::Reporter, scope_hash, state_dir};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -32,6 +32,7 @@ struct Args {
     cross: bool,
     follow: bool,
     ephemeral: bool,
+    quiet: bool,
     limit: usize,
     target: Option<String>,
 }
@@ -45,6 +46,7 @@ fn parse_args() -> Args {
         cross: false,
         follow: false,
         ephemeral: false,
+        quiet: false,
         limit: 15,
         target: None,
     };
@@ -55,6 +57,7 @@ fn parse_args() -> Args {
             "--cross-filesystems" => a.cross = true,
             "--follow-symlinks" => a.follow = true,
             "--ephemeral" => a.ephemeral = true,
+            "--quiet" | "-q" => a.quiet = true,
             "--limit" => {
                 i += 1;
                 a.limit = raw.get(i).and_then(|s| s.parse().ok()).unwrap_or(15);
@@ -100,7 +103,7 @@ fn run() -> Result<i32> {
             }
             println!(
                 "\n  USAGE\n\
-                 \x20   disc0 scan <path> [--json] [--cross-filesystems] [--ephemeral] [--limit N]\n\
+                 \x20   disc0 scan <path> [--json] [--quiet] [--cross-filesystems] [--ephemeral] [--limit N]\n\
                  \x20   disc0 findings [--json]\n\
                  \x20   disc0 explain <finding-id> [--json]\n\
                  \x20   disc0 status [--json]\n\
@@ -139,20 +142,71 @@ fn cmd_scan(a: &Args) -> Result<i32> {
         ..Default::default()
     };
 
+    // Progress goes to stderr only, and is silenced for --json so a machine
+    // consumer sees nothing but the document.
+    let mut rep = Reporter::new(a.json || a.quiet);
     if !a.json {
-        eprintln!("scanning {} …", root.display());
+        print!("{}", brand::banner());
     }
-    let t0 = std::time::Instant::now();
-    let result = scan::scan(&root, &opts)?;
-    let scan_ms = t0.elapsed().as_millis();
-    let findings = detect::detect(&result);
+    rep.phase("SCAN", &format!("walking {}", root.display()));
 
+    let t0 = std::time::Instant::now();
+    let result = {
+        let r = &mut rep;
+        scan::scan_with(&root, &opts, &mut |p: &scan::Progress| {
+            r.tick(
+                p.entries,
+                p.files,
+                p.bytes_seen,
+                p.coverage_errors,
+                &p.current.to_string_lossy(),
+            );
+        })?
+    };
+    let scan_dur = t0.elapsed();
+    let scan_ms = scan_dur.as_millis();
+    rep.phase_done(
+        "SCAN",
+        &format!(
+            "{} entries · {} files · {}",
+            result.entries.len(),
+            result.file_count(),
+            human(result.allocated_deduped())
+        ),
+        scan_dur,
+    );
+
+    rep.phase("DETECT", "matching owners against project metadata");
+    let t1 = std::time::Instant::now();
+    let findings = detect::detect(&result);
+    rep.phase_done(
+        "DETECT",
+        &format!("{} findings", findings.len()),
+        t1.elapsed(),
+    );
+
+    rep.phase(
+        "PERSIST",
+        if a.ephemeral { "in-memory only, no baseline" } else { "writing receipt chain to NEDB" },
+    );
+    let t2 = std::time::Instant::now();
     let store = if a.ephemeral {
         store::Store::ephemeral()
     } else {
         store::Store::open(&st)?
     };
     let written = store.write_scan(&result, &findings, &scope_hash(&root, a.cross, a.follow))?;
+    rep.phase_done(
+        "PERSIST",
+        &format!(
+            "{} observation pages · {} findings · {}",
+            written.observation_pages,
+            written.finding_count,
+            if written.persisted { "durable" } else { "NOT PERSISTED" }
+        ),
+        t2.elapsed(),
+    );
+    rep.clear();
 
     if a.json {
         let out = json!({

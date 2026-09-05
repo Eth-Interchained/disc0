@@ -7,12 +7,14 @@
 
 pub mod brand;
 pub mod detect;
+pub mod progress;
 pub mod scan;
 pub mod store;
 
 pub use brand::{banner, provenance_json, signature};
 pub use detect::{Consequence, Evidence, Finding};
-pub use scan::{scan, Coverage, Entry, ScanOptions, ScanResult};
+pub use progress::Reporter;
+pub use scan::{scan, scan_with, Coverage, Entry, Progress, ScanOptions, ScanResult};
 pub use store::{BaselineCheck, Store, WrittenScan};
 
 /// Format bytes for humans. Shared so the CLI and GUI never disagree about

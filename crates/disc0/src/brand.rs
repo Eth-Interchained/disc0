@@ -41,6 +41,18 @@ pub fn color_enabled() -> bool {
     unsafe { libc::isatty(1) == 1 }
 }
 
+/// Same policy as [`color_enabled`] but tested against stderr, where progress
+/// is written.
+pub fn color_enabled_stderr() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() || std::env::var_os("DISC0_NO_COLOR").is_some() {
+        return false;
+    }
+    if matches!(std::env::var("TERM").as_deref(), Ok("dumb")) {
+        return false;
+    }
+    unsafe { libc::isatty(2) == 1 }
+}
+
 struct Paint(bool);
 impl Paint {
     fn w(&self, code: &str, s: &str) -> String {
