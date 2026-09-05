@@ -1,0 +1,257 @@
+//! Filesystem scanner: emits observations, records coverage loss honestly.
+//!
+//! Contract (from the spec, enforced here):
+//!   - symlinks are recorded, never followed
+//!   - the scan stops at mount boundaries unless explicitly allowed
+//!   - permission errors and disappearing files become explicit partial
+//!     coverage, never silently-missing bytes
+//!   - logical size and allocated size are tracked separately
+//!   - the tool's own state directory is excluded from its own scan
+
+use std::collections::HashSet;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone)]
+pub struct Entry {
+    pub path: PathBuf,
+    pub dev: u64,
+    pub ino: u64,
+    pub nlink: u64,
+    /// Apparent size in bytes.
+    pub logical: u64,
+    /// Blocks actually allocated * 512. Differs from logical for sparse,
+    /// compressed, and small files; this is the number that maps to disk usage.
+    pub allocated: u64,
+    pub is_dir: bool,
+    pub is_symlink: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum Coverage {
+    PermissionDenied(PathBuf),
+    Vanished(PathBuf),
+    MountBoundary(PathBuf),
+    ReadError(PathBuf, String),
+    Excluded(PathBuf),
+}
+
+impl Coverage {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Coverage::PermissionDenied(_) => "permission_denied",
+            Coverage::Vanished(_) => "vanished_during_scan",
+            Coverage::MountBoundary(_) => "mount_boundary",
+            Coverage::ReadError(..) => "read_error",
+            Coverage::Excluded(_) => "excluded",
+        }
+    }
+    /// The error detail, when there is one. A tool about honesty must not
+    /// record a reason and then hide it.
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Coverage::ReadError(_, m) => Some(m.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        match self {
+            Coverage::PermissionDenied(p)
+            | Coverage::Vanished(p)
+            | Coverage::MountBoundary(p)
+            | Coverage::ReadError(p, _)
+            | Coverage::Excluded(p) => p,
+        }
+    }
+}
+
+pub struct ScanResult {
+    pub entries: Vec<Entry>,
+    pub coverage: Vec<Coverage>,
+    pub root: PathBuf,
+    pub root_dev: u64,
+    pub cross_filesystems: bool,
+    /// True only when every directory under the root was fully enumerated.
+    pub complete: bool,
+}
+
+impl ScanResult {
+    /// Allocated bytes, counting each inode ONCE. A hard-linked file occupies
+    /// its blocks a single time no matter how many paths point at it.
+    pub fn allocated_deduped(&self) -> u64 {
+        let mut seen: HashSet<(u64, u64)> = HashSet::new();
+        let mut total = 0u64;
+        for e in &self.entries {
+            if e.is_dir || e.is_symlink {
+                continue;
+            }
+            if seen.insert((e.dev, e.ino)) {
+                total += e.allocated;
+            }
+        }
+        total
+    }
+
+    pub fn logical_total(&self) -> u64 {
+        let mut seen: HashSet<(u64, u64)> = HashSet::new();
+        let mut total = 0u64;
+        for e in &self.entries {
+            if e.is_dir || e.is_symlink {
+                continue;
+            }
+            if seen.insert((e.dev, e.ino)) {
+                total += e.logical;
+            }
+        }
+        total
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.entries.iter().filter(|e| !e.is_dir && !e.is_symlink).count()
+    }
+}
+
+pub struct ScanOptions {
+    pub cross_filesystems: bool,
+    pub follow_symlinks: bool,
+    /// Absolute paths to skip entirely (our own state dir lives here).
+    pub excluded: Vec<PathBuf>,
+    /// Stop after this many entries, so an accidental `/` scan is bounded.
+    pub max_entries: usize,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            cross_filesystems: false,
+            follow_symlinks: false,
+            excluded: Vec::new(),
+            max_entries: 5_000_000,
+        }
+    }
+}
+
+pub fn scan(root: &Path, opts: &ScanOptions) -> anyhow::Result<ScanResult> {
+    let root = root
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("cannot open root {}: {}", root.display(), e))?;
+    let root_meta = fs::symlink_metadata(&root)?;
+    let root_dev = root_meta.dev();
+
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut coverage: Vec<Coverage> = Vec::new();
+    let mut complete = true;
+    let mut stack: Vec<PathBuf> = vec![root.clone()];
+
+    // The root itself is an entry.
+    entries.push(entry_from(&root, &root_meta));
+
+    while let Some(dir) = stack.pop() {
+        if entries.len() >= opts.max_entries {
+            complete = false;
+            coverage.push(Coverage::ReadError(
+                dir.clone(),
+                format!("entry cap {} reached", opts.max_entries),
+            ));
+            break;
+        }
+
+        let rd = match fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                complete = false;
+                coverage.push(match e.kind() {
+                    std::io::ErrorKind::PermissionDenied => Coverage::PermissionDenied(dir.clone()),
+                    std::io::ErrorKind::NotFound => Coverage::Vanished(dir.clone()),
+                    _ => Coverage::ReadError(dir.clone(), e.to_string()),
+                });
+                continue;
+            }
+        };
+
+        for item in rd {
+            let item = match item {
+                Ok(i) => i,
+                Err(e) => {
+                    complete = false;
+                    coverage.push(Coverage::ReadError(dir.clone(), e.to_string()));
+                    continue;
+                }
+            };
+            let path = item.path();
+
+            if opts.excluded.iter().any(|x| path == *x || path.starts_with(x)) {
+                coverage.push(Coverage::Excluded(path));
+                continue;
+            }
+
+            // symlink_metadata: never follow. A symlink is recorded as itself.
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    complete = false;
+                    coverage.push(match e.kind() {
+                        std::io::ErrorKind::PermissionDenied => {
+                            Coverage::PermissionDenied(path.clone())
+                        }
+                        std::io::ErrorKind::NotFound => Coverage::Vanished(path.clone()),
+                        _ => Coverage::ReadError(path.clone(), e.to_string()),
+                    });
+                    continue;
+                }
+            };
+
+            let is_symlink = meta.file_type().is_symlink();
+            let e = entry_from(&path, &meta);
+
+            if e.is_dir && !is_symlink {
+                if e.dev != root_dev && !opts.cross_filesystems {
+                    // A different device under the root is a separate volume;
+                    // its bytes are NOT ours to attribute.
+                    coverage.push(Coverage::MountBoundary(path.clone()));
+                    complete = false;
+                    entries.push(e);
+                    continue;
+                }
+                stack.push(path.clone());
+            }
+            if is_symlink && opts.follow_symlinks {
+                // Deliberately unimplemented: following symlinks needs cycle
+                // detection and changes what "reclaimable" means. Recorded so
+                // the flag can never silently do nothing.
+                coverage.push(Coverage::ReadError(
+                    path.clone(),
+                    "follow_symlinks requested but not implemented in v0.1".into(),
+                ));
+                complete = false;
+            }
+            entries.push(e);
+        }
+    }
+
+    Ok(ScanResult {
+        entries,
+        coverage,
+        root,
+        root_dev,
+        cross_filesystems: opts.cross_filesystems,
+        complete,
+    })
+}
+
+fn entry_from(path: &Path, meta: &fs::Metadata) -> Entry {
+    Entry {
+        path: path.to_path_buf(),
+        dev: meta.dev(),
+        ino: meta.ino(),
+        nlink: meta.nlink(),
+        logical: meta.len(),
+        // st_blocks is in 512-byte units by POSIX definition, regardless of
+        // the filesystem's own block size.
+        allocated: meta.blocks().saturating_mul(512),
+        is_dir: meta.file_type().is_dir(),
+        is_symlink: meta.file_type().is_symlink(),
+    }
+}

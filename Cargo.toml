@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/disc0"]
+
+# One repo, one build, one lockfile. The GUI links the disc0 library
+# IN-PROCESS — no subprocess, no JSON round trip — so CLI and GUI can never
+# drift onto different versions of the scanner. That version skew is a whole
+# class of bug we decline to invent.
+[workspace.package]
+version    = "0.1.0"
+edition    = "2021"
+license    = "GPL-3.0-or-later"
+repository = "https://github.com/Eth-Interchained/disc0"
+
+[workspace.dependencies]
+anyhow      = "1"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+rayon       = "1"
+libc        = "0.2"
+nedb-engine = "=2.8.6"

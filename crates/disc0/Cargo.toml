@@ -1,0 +1,25 @@
+[package]
+name = "disc0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "disc0"
+path = "src/lib.rs"
+
+[[bin]]
+name = "disc0"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+# 2.8.6 exactly: disc0 depends on try_flush_all() and repair(), which do not
+# exist in 2.8.5 or earlier. A silently-swallowed flush error is precisely the
+# failure this tool must never have.
+nedb-engine.workspace = true
+libc.workspace = true
